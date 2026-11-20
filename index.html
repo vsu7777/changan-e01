@@ -1,0 +1,416 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<title>长安易主 · 第一场 犬戎攻周</title>
+<script type="importmap">{"imports":{"three":"/node_modules/three/build/three.module.js","three/addons/":"/node_modules/three/examples/jsm/"}}</script>
+<style>
+@font-face{font-family:NotoSC;src:url(fonts/NotoSansSC-500-sub.woff2) format('woff2');font-weight:500}
+@font-face{font-family:NotoSC;src:url(fonts/NotoSansSC-700-sub.woff2) format('woff2');font-weight:700}
+html,body{margin:0;background:#05080c;overflow:hidden}
+canvas{position:absolute;left:0;top:0;width:1920px;height:1080px}
+</style></head>
+<body>
+<script type="module">
+// 长安易主系列 · 第 1 场《前771年 · 犬戎攻周》试段 30 s, 24 fps
+// map-explainer 风格:真实地形 + 发光示意箭头 + 常驻关隘 + 文字旗 + 情报卡 + 底部字幕(中文单语,无旁白无配乐)
+// 红线:无"烽火戏诸侯";无入关逐程路线(仅一支标"示意"的西→东箭头);不画丰镐建筑被焚;日期只写"前771年(传统纪年)";不编兵力/伤亡数字
+import * as THREE from 'three';
+import { makePost } from './post.js';
+import { clamp, lerp, seg, ss, eo, eio, track } from '/core/lib.js';
+
+const Wd = 1920, Ht = 1080, Q = new URLSearchParams(location.search);
+const DUR = 60;
+
+// ---------- data ----------
+const J = u => fetch(u).then(r => r.json()), B = u => fetch(u).then(r => r.arrayBuffer());
+const [meta, wmeta, hraw, wraw, CUES] = await Promise.all([J('assets/meta.json'), J('assets/wide_meta.json'), B('assets/height.bin'), B('assets/wide_height.bin'), J('cues.json')]);
+const hbuf = new Float32Array(hraw), wbuf = new Float32Array(wraw);
+const EX = 3.2;
+const { GW, GH, km_px, width_km: WK, height_km: HK } = meta;
+const [MX0, MY0] = meta.merc;
+const D2R = Math.PI / 180;
+function merc(lon, lat) { const n = 2 ** meta.z * 256; return [(lon + 180) / 360 * n, (1 - Math.asinh(Math.tan(lat * D2R)) / Math.PI) / 2 * n]; }
+function xz(lon, lat) { const [mx, my] = merc(lon, lat); return [(mx - MX0) * km_px - WK / 2, (my - MY0) * km_px - HK / 2]; }
+const [WX0, WZ0] = xz(wmeta.bbox[0], wmeta.bbox[3]), [WX1, WZ1] = xz(wmeta.bbox[2], wmeta.bbox[1]);
+function bil(buf, w, h, gx, gz) {
+  const x0 = Math.max(0, Math.min(w - 2, Math.floor(gx))), z0 = Math.max(0, Math.min(h - 2, Math.floor(gz)));
+  const fx = clamp(gx - x0), fz = clamp(gz - z0);
+  const a = buf[z0 * w + x0], b = buf[z0 * w + x0 + 1], c = buf[(z0 + 1) * w + x0], d = buf[(z0 + 1) * w + x0 + 1];
+  return (a * (1 - fx) + b * fx) * (1 - fz) + (c * (1 - fx) + d * fx) * fz;
+}
+function hAt(X, Z) {
+  if (Math.abs(X) < WK / 2 && Math.abs(Z) < HK / 2) return bil(hbuf, GW, GH, (X + WK / 2) / WK * (GW - 1), (Z + HK / 2) / HK * (GH - 1));
+  return bil(wbuf, wmeta.GW, wmeta.GH, (X - WX0) / (WX1 - WX0) * (wmeta.GW - 1), (Z - WZ0) / (WZ1 - WZ0) * (wmeta.GH - 1));
+}
+const yOf = h => Math.max(h, 0) / 1000 * EX;
+function geo(lon, lat, lift = 0) { const [X, Z] = xz(lon, lat); return new THREE.Vector3(X, yOf(hAt(X, Z)) + lift, Z); }
+
+// ---------- places (lon, lat; approximate label positions, see FACTS.md) ----------
+const FENGHAO = [108.72, 34.22], LISHAN = [109.20, 34.36], XIANYANG = [108.72, 34.34];
+const WEIHE = [109.00, 34.42], FENHE = [108.62, 34.32], QINLING = [109.05, 34.06];
+const PASSES = [[110.20, 34.55, '潼关'], [110.55, 33.55, '武关'], [107.20, 34.30, '散关'], [110.60, 34.60, '函谷关']];
+// the one schematic arrow: west → east toward Mount Li (labelled 示意; NOT a traced invasion route)
+const ARROW_LL = [[108.55, 34.30], [108.75, 34.32], [108.95, 34.34], [109.12, 34.35]];
+// the court's eastward move (30–48 s): a schematic line Fenghao → map edge toward Luoyi.
+// It follows the Wei River valley corridor (the natural lowland route east), staying north of Lishan
+// so the line is not hidden behind the mountain. True Luoyi (~112.45°E) lies beyond this map's
+// eastern edge (111.0°E); the marker shows the direction/destination, not a precise site.
+const EAST_LL = [[108.72, 34.22], [109.00, 34.38], [109.50, 34.42], [110.10, 34.42], [110.70, 34.42]];
+const LUOYI = [110.70, 34.42];
+
+// ---------- renderer, terrain ----------
+const renderer = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: true });
+renderer.setPixelRatio(2); renderer.setSize(Wd, Ht);
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.25;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+const HAZE = new THREE.Color(0x5f6872);
+scene.background = HAZE.clone();
+scene.fog = new THREE.Fog(HAZE, 300, 900);
+const tl = new THREE.TextureLoader();
+const load = u => new Promise((r, e) => tl.load(u, r, undefined, e));
+const [albedo, waterTex, shadowTex, walbedo, wwaterTex, wshadowTex] = await Promise.all(
+  ['assets/albedo.jpg', 'assets/water.png', 'assets/shadow.png', 'assets/wide_albedo.jpg', 'assets/wide_water.png', 'assets/wide_shadow.png'].map(load));
+for (const t of [albedo, walbedo]) { t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 16; }
+for (const t of [shadowTex, wshadowTex]) t.anisotropy = 8;
+
+function roughFrom(tex) {
+  const c = document.createElement('canvas'); c.width = tex.image.width; c.height = tex.image.height;
+  const g = c.getContext('2d'); g.drawImage(tex.image, 0, 0); const id = g.getImageData(0, 0, c.width, c.height);
+  for (let i = 0; i < id.data.length; i += 4) { const w = id.data[i] / 255; id.data[i] = id.data[i + 1] = id.data[i + 2] = 245 * (1 - w) + 185 * w; }
+  g.putImageData(id, 0, 0); return new THREE.CanvasTexture(c);
+}
+const LIGHT_CHUNK = THREE.ShaderChunk.lights_fragment_begin.replaceAll('RE_Direct( directLight,', 'directLight.color *= mix( 1.0, texture2D( tShadow, vMapUv ).r, 0.88 );\n\t\tRE_Direct( directLight,');
+function terrainMat(map, water, shadow, clipRect) {
+  const m = new THREE.MeshStandardMaterial({ map, roughnessMap: roughFrom(water), roughness: 1, metalness: 0 });
+  m.onBeforeCompile = sh => {
+    Object.assign(sh.uniforms, { tShadow: { value: shadow }, clipR: { value: clipRect || new THREE.Vector4(1, 1, -1, -1) } });
+    sh.vertexShader = 'varying vec3 vWp;\n' + sh.vertexShader.replace('#include <project_vertex>', '#include <project_vertex>\n vWp = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+    sh.fragmentShader = 'uniform sampler2D tShadow; uniform vec4 clipR; varying vec3 vWp;\n' + sh.fragmentShader
+      .replace('void main() {', 'void main() {\n if (vWp.x > clipR.x && vWp.x < clipR.z && vWp.z > clipR.y && vWp.z < clipR.w) discard;')
+      .replace('#include <lights_fragment_begin>', LIGHT_CHUNK);
+  };
+  return m;
+}
+function terrainMesh(w, h, gw, gh, buf, mat) {
+  const g = new THREE.PlaneGeometry(w, h, gw - 1, gh - 1); g.rotateX(-Math.PI / 2);
+  const p = g.attributes.position; for (let i = 0; i < p.count; i++) p.setY(i, yOf(buf[i]));
+  g.computeVertexNormals(); return new THREE.Mesh(g, mat);
+}
+scene.add(terrainMesh(WK, HK, GW, GH, hbuf, terrainMat(albedo, waterTex, shadowTex)));
+{
+  const inset = 1.5, clip = new THREE.Vector4(-WK / 2 + inset, -HK / 2 + inset, WK / 2 - inset, HK / 2 - inset);
+  const wm = terrainMesh(WX1 - WX0, WZ1 - WZ0, wmeta.GW, wmeta.GH, wbuf, terrainMat(walbedo, wwaterTex, wshadowTex, clip));
+  wm.position.set((WX0 + WX1) / 2, -.03, (WZ0 + WZ1) / 2); scene.add(wm);
+}
+const sun = new THREE.DirectionalLight(0xffe2b8, 3.1);
+sun.position.set(-150, 62, -70); sun.target.position.set(0, 0, 0);
+scene.add(sun, sun.target, new THREE.HemisphereLight(0x9fb6c8, 0x4a3420, 0.55));
+
+// ---------- glowing ribbon: the one schematic arrow ----------
+// width = max(world width, pixel width)
+const camera = new THREE.PerspectiveCamera(28, Wd / Ht, 2, 900);
+const PIXK = 2 * Math.tan(THREE.MathUtils.degToRad(14)) / Ht;
+const RIB_V = `attribute float aSide; attribute vec3 aNorm; attribute float aAlong;
+  uniform float wW, pxW, pixK; varying float vSide, vAlong; varying vec3 vW;
+  void main(){ vec4 wp = modelMatrix * vec4(position, 1.); float pw = length(cameraPosition - wp.xyz) * pixK;
+    float hw = max(wW * .5, pxW * .5 * pw); wp.xyz += aNorm * aSide * hw; vSide = aSide; vAlong = aAlong; vW = wp.xyz;
+    gl_Position = projectionMatrix * viewMatrix * wp; }`;
+const RIB_F = `varying float vSide, vAlong; varying vec3 vW; uniform vec3 col; uniform float k, inten, revA, revB, soft, head, headAmt, flowSp, flowLen, flowAmt, flowPh, base, L, endFade;
+  void main(){
+    float d = vSide; float g = exp(-d * d * k);
+    float vis = smoothstep(revA - soft, revA, vAlong) * (1. - smoothstep(revB, revB + soft, vAlong));
+    if (vis <= 0.) discard;
+    float e = smoothstep(0., endFade, vAlong) * smoothstep(L, L - endFade, vAlong);
+    float a = base;
+    if (flowAmt > 0.) { float f = fract((vAlong - flowPh) / flowSp); a += flowAmt * smoothstep(1. - flowLen / flowSp, 1., f) * smoothstep(1., .985, f); }
+    a += headAmt * exp(-pow((vAlong - head) / (2.5 * max(1., soft / 2.)), 2.));
+    gl_FragColor = vec4(col * g * a * inten * vis * e, 1.); }`;
+function ribbon(pts, o, sc = scene) {
+  const pos = [], side = [], nrm = [], al = [], idx = []; let L = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[Math.max(0, i - 1)], b = pts[Math.min(pts.length - 1, i + 1)];
+    const t = new THREE.Vector3().subVectors(b, a); const u = new THREE.Vector3(0, 1, 0);
+    const n = new THREE.Vector3().crossVectors(t, u).normalize();
+    if (i) L += pts[i].distanceTo(pts[i - 1]);
+    const p = pts[i];
+    for (const s of [1, -1]) { pos.push(p.x, p.y, p.z); side.push(s); nrm.push(n.x, n.y, n.z); al.push(L); }
+    if (i) { const q = 2 * i; idx.push(q - 2, q - 1, q, q - 1, q + 1, q); }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('aSide', new THREE.Float32BufferAttribute(side, 1));
+  g.setAttribute('aNorm', new THREE.Float32BufferAttribute(nrm, 3)); g.setAttribute('aAlong', new THREE.Float32BufferAttribute(al, 1)); g.setIndex(idx);
+  const U = { col: new THREE.Color(o.col ?? 0xffa63d), k: o.k ?? 3, inten: 0, wW: o.wW ?? 0, pxW: o.pxW ?? 2, pixK: PIXK, revA: 0, revB: 1e9, soft: o.soft ?? 2,
+    head: -1e6, headAmt: 0, flowSp: o.flowSp ?? 30, flowLen: o.flowLen ?? 6, flowAmt: o.flowAmt ?? 0, flowPh: 0,
+    base: o.base ?? 1, L, endFade: o.endFade ?? .01 };
+  const uniforms = {}; for (const k in U) uniforms[k] = { value: U[k] };
+  const m = new THREE.Mesh(g, new THREE.ShaderMaterial({ uniforms, vertexShader: RIB_V, fragmentShader: RIB_F, side: THREE.DoubleSide, transparent: true, depthWrite: false,
+    blending: THREE.AdditiveBlending, toneMapped: false }));
+  m.renderOrder = o.order ?? 2; m.frustumCulled = false; sc.add(m);
+  m.L = L; m.u = uniforms; return m;
+}
+const smooth = (pts, n) => new THREE.CatmullRomCurve3(pts, false, 'centripetal').getSpacedPoints(n);
+const rv = (r, a) => { for (const k in a) r.u[k].value = a[k]; };
+// attacker red (reference grammar: red = the attacking side); amber kept for data/markers
+const RED = 0xff4a3d, RED2 = 0xff7a5c;
+const arrowPts = smooth(ARROW_LL.map(([lo, la]) => geo(lo, la, .35)), 160);
+const arrow = { glow: ribbon(arrowPts, { pxW: 14, k: 3.2, base: .22, col: RED }), core: ribbon(arrowPts, { pxW: 2.6, k: 1.2, flowAmt: 2.2, flowSp: 40, flowLen: 12, base: .9, col: RED2 }) };
+// amber/gold for the court's eastward move (distinct from the red attack arrow)
+const eastPts = smooth(EAST_LL.map(([lo, la]) => geo(lo, la, .35)), 160);
+const east = { glow: ribbon(eastPts, { pxW: 10, k: 3.2, base: .22, col: 0xffc36b }), core: ribbon(eastPts, { pxW: 2.2, k: 1.2, flowAmt: 1.5, flowSp: 40, flowLen: 10, base: .9, col: 0xffd996 }) };
+
+// ---------- camera: one continuous move, keys [t, [log distance km, pitch°, yaw°, lon, lat, height km]] ----------
+// 开场直接全屏地形（用户 2026-11-20：不要 800 km 俯冲过渡——像图片、缺地形厚重感）；0–10 s 为极慢推近 130→122 km
+const CAM = track([
+  [0.0, [Math.log(130), 48, 0, 109.00, 34.30, 0]],
+  [10.0, [Math.log(122), 48, 0, 109.00, 34.30, 0]],
+  [18.0, [Math.log(210), 50, 0, 109.05, 34.32, 0]],
+  [21.0, [Math.log(35), 20, 0, 109.20, 34.36, 0]],
+  [24.0, [Math.log(33), 19, 0, 109.20, 34.36, 0]],
+  [30.0, [Math.log(140), 46, 0, 108.75, 34.24, 0]],
+  [38.0, [Math.log(160), 48, 0, 109.40, 34.30, 0]],
+  [48.0, [Math.log(190), 50, 0, 110.00, 34.35, 0]],
+  [54.0, [Math.log(220), 55, 0, 109.70, 34.30, 0]],
+  [60.0, [Math.log(220), 55, 0, 109.70, 34.30, 0]]]);
+function setCamera(t) {
+  const [ld, pd, yd, lo, la, h] = CAM(clamp(t, 0, 60)); const [X, Z] = xz(lo, la);
+  const d = Math.exp(ld), p = pd * D2R, y = yd * D2R;
+  camera.position.set(X + Math.sin(y) * Math.cos(p) * d, h + Math.sin(p) * d, Z + Math.cos(y) * Math.cos(p) * d);
+  camera.near = Math.max(.2, d * .06); camera.far = d * 6 + 400; camera.lookAt(new THREE.Vector3(X, h, Z));
+  camera.updateProjectionMatrix(); camera.updateMatrixWorld();
+  scene.fog.near = d * 1.05; scene.fog.far = d * 3.4 + 60;
+  return d;
+}
+
+// ---------- post ----------
+// ?ssaa= / ?maxcoc= override the style defaults (2 / 7) for speed tests only; the film renders at the defaults.
+const SSAA = parseFloat(Q.get('ssaa') || '2'), MAXCOC = parseFloat(Q.get('maxcoc') || '7');
+const post = makePost(renderer, scene, camera, Wd, Ht, { ssaa: SSAA, ao: false });
+post.dof.maxCoc = MAXCOC; post.bloom.strength = .55; post.bloom.radius = .55; post.bloom.threshold = .95;
+const VU = post.vig.uniforms; VU.amt.value = .42; VU.warm.value = .25; VU.sat.value = .92; VU.contrast.value = .12;
+
+// ---------- overlay ----------
+const ov = document.createElement('canvas'); ov.width = Wd * 2; ov.height = Ht * 2; ov.style.width = Wd + 'px'; ov.style.height = Ht + 'px'; document.body.appendChild(ov);
+const g = ov.getContext('2d');
+await Promise.all(['500 20px NotoSC', '700 20px NotoSC'].map(f => document.fonts.load(f, '第一场犬戎攻周前771年丰镐')));
+const scrW = (v, cam) => { const p = v.clone().project(cam); return [(p.x + 1) / 2 * Wd, (1 - p.y) / 2 * Ht, p.z]; };
+const scr = v => scrW(v, camera);
+const C = { land: '#2b2119', sea: '#bcdbe6', light: '#f6eee0', amber: '#ffc36b', amberSoft: 'rgba(255,214,150,.92)', ice: '#d9e6ee', dim: 'rgba(240,232,216,.66)', red: '#ff6a55', redDeep: '#c8352b', blue: '#1f4e8c' };
+let TX = [];
+function txt(s, x, y, o) {
+  g.save(); g.font = `${o.w || 500} ${o.size}px ${o.f || 'NotoSC'}`; g.letterSpacing = (o.sp || 0) + 'px';
+  g.textAlign = o.align || 'center'; g.textBaseline = o.base || 'middle'; g.globalAlpha = clamp(o.a ?? 1); g.fillStyle = o.col || C.light;
+  if (o.stroke) { g.strokeStyle = o.stroke; g.lineWidth = o.sw || 4; g.lineJoin = 'round'; g.strokeText(s, x, y); }
+  g.fillText(s, x, y); const w = g.measureText(s).width;
+  const x0 = o.align === 'left' ? x : o.align === 'right' ? x - w : x - w / 2;
+  if ((o.a ?? 1) > .5 && !o.nobox) TX.push({ id: o.id || s, text: s, x0, y0: y - o.size * .6, x1: x0 + w, y1: y + o.size * .6 });
+  g.restore(); return w;
+}
+const tw = (s, size, w = 500, sp = 0, f = 'NotoSC') => { g.save(); g.font = `${w} ${size}px ${f}`; g.letterSpacing = sp + 'px'; const r = g.measureText(s).width; g.restore(); return r; };
+function line(pts, col, w = 1.4, a = 1, dash = null) { g.save(); g.globalAlpha = a; g.strokeStyle = col; g.lineWidth = w; if (dash) g.setLineDash(dash); g.beginPath(); pts.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y)); g.stroke(); g.restore(); }
+function dot(x, y, r, col, a = 1) { g.save(); g.globalAlpha = a; g.fillStyle = col; g.beginPath(); g.arc(x, y, r, 0, 7); g.fill(); g.restore(); }
+function rect(x, y, w, h, col, a = 1) { g.save(); g.globalAlpha = a; g.fillStyle = col; g.fillRect(x, y, w, h); g.restore(); }
+
+const BOTTOM_SAFE = 190;
+function labelAt(ll, s, o, t) {
+  const [x, y, z] = scr(geo(ll[0], ll[1], .3)); if (z > 1) return;
+  const a = (o.a ?? 1);
+  const w = tw(s, o.size, o.w, o.sp), x0 = o.align === 'left' ? x : o.align === 'right' ? x - w : x - w / 2, x1 = x0 + w;
+  const m = Math.min(x0 - 40, Wd - 40 - x1, y - 40, (x0 < 1250 ? Ht - BOTTOM_SAFE : Ht - 70) - y);
+  const aa = a * ss(seg(m, 0, 50)); if (aa <= .01) return;
+  txt(s, x, y + (o.dy || 0), { ...o, a: aa, id: o.id || s });
+}
+// [lon, lat, text, style, from, to, dx, dy] — dx/dy in px, applied to the label position
+const LABELS = [
+  [108.72, 34.22, '丰镐', { size: 30, w: 700, sp: 6, col: '#ffffff', stroke: 'rgba(26,18,11,.9)', sw: 5 }, 1.0, 30, -70, 34],
+  [109.20, 34.36, '骊山', { size: 30, w: 700, sp: 6, col: C.light }, 1.0, 30, 0, 42],
+  [109.00, 34.42, '渭河', { size: 22, w: 600, sp: 5, col: C.sea }, 3.0, 30, 0, -24],
+  [108.62, 34.32, '沣河', { size: 22, w: 600, sp: 5, col: C.sea }, 3.0, 30, -52, -10],
+  [109.05, 34.06, '秦岭', { size: 24, w: 600, sp: 6, col: C.light }, 3.0, 30, 0, 30],
+];
+function mapLabels(t) {
+  for (const [lo, la, s, st, a0, a1, dx, dy] of LABELS) {
+    const a = ss(seg(t, a0, a0 + .6)) * (1 - ss(seg(t, a1 - .5, a1))); if (a <= .01) continue;
+    const [x, y, z] = scr(geo(lo, la, .3)); if (z > 1) continue;
+    const w = tw(s, st.size, st.w, st.sp), x0 = x + dx - w / 2, x1 = x0 + w;
+    const m = Math.min(x0 - 40, Wd - 40 - x1, y + dy - 40, (x0 < 1250 ? Ht - BOTTOM_SAFE : Ht - 70) - (y + dy));
+    const aa = a * ss(seg(m, 0, 50)); if (aa <= .01) continue;
+    txt(s, x + dx, y + dy, { ...st, a: aa, id: 'L' + s });
+  }
+  // permanent passes: always on the map (fade only when off-frame)
+  for (const [lo, la, s] of PASSES) {
+    const a = ss(seg(t, .6, 1.4)); if (a <= .01) continue;
+    const [x, y, z] = scr(geo(lo, la, .3)); if (z > 1) continue;
+    const w = tw(s, 18, 600, 4), x0 = x - w / 2, x1 = x0 + w;
+    const m = Math.min(x0 - 30, Wd - 30 - x1, y - 30, Ht - 60 - y);
+    const aa = a * ss(seg(m, 0, 40)); if (aa <= .01) continue;
+    dot(x, y, 3, C.amber, aa);
+    txt(s, x, y + 26, { size: 18, w: 600, sp: 4, col: C.light, a: aa * .92, id: 'P' + s });
+  }
+}
+
+// title block, top-left (static); pin + pulse at Fenghao; leader line while Fenghao is on screen
+function titleBlock(t) {
+  const a = ss(seg(t, .5, 1.5)); if (a <= 0) return;
+  txt('第一场 · 犬戎攻周', 96, 92, { size: 44, w: 700, sp: 4, align: 'left', col: C.light, a, id: 'title' });
+  const [fx, fy, fz] = scr(geo(...FENGHAO, .4));
+  if (fz < 1 && fx > 0 && fx < Wd && fy > 0 && fy < Ht) {
+    const r = seg(t, 1.0, 2.2);
+    for (const k of [0, .33, .66]) { const q = (r * 1.4 + k) % 1; g.save(); g.globalAlpha = a * (1 - q) * .8; g.strokeStyle = C.amber; g.lineWidth = 1.4; g.beginPath(); g.arc(fx, fy, 6 + 34 * q, 0, 7); g.stroke(); g.restore(); }
+    dot(fx, fy, 4, C.amber, a);
+    const la = a * (1 - ss(seg(t, 8, 10)));
+    if (la > .01) {
+      const e = eo(seg(t, 1.2, 2.0));
+      line([[fx, fy], [fx + (104 - fx) * e, fy + (92 - fy) * e]], 'rgba(255,214,150,.85)', 1.2, la);
+    }
+  }
+}
+
+// date block, top-right
+function dateBlock(t) {
+  const a = ss(seg(t, .5, 1.5)); if (a <= 0) return;
+  txt('前771年', Wd - 96, 72, { size: 40, w: 700, sp: 4, align: 'right', col: C.light, a, id: 'date' });
+  txt('传统纪年', Wd - 96, 112, { size: 18, w: 500, sp: 6, align: 'right', col: C.amberSoft, a, id: 'date-sub' });
+  line([[Wd - 96 - tw('前771年', 40, 700, 4), 138], [Wd - 96, 138]], 'rgba(255,214,150,.6)', 1.2, a);
+}
+
+// the text flag above Fenghao: 周 (blue) → 犬戎 (red), crossfade 24–27 s
+function flag(t) {
+  const [fx, fy, fz] = scr(geo(...FENGHAO, .4)); if (fz > 1) return;
+  const aIn = ss(seg(t, 1.0, 2.0)) * (1 - ss(seg(t, 46.0, 48.0)));   // fades out 46–48 s so it never clashes with the ending card
+  const aZhou = aIn * (1 - ss(seg(t, 24.0, 27.0)));
+  const aRong = aIn * ss(seg(t, 24.0, 27.0));
+  if (aZhou <= .01 && aRong <= .01) return;
+  const poleTop = fy - 78;
+  line([[fx, fy], [fx, poleTop]], 'rgba(246,238,224,.9)', 2, Math.max(aZhou, aRong));
+  for (const [txtS, col, a] of [['周', C.blue, aZhou], ['犬戎', C.redDeep, aRong]]) {
+    if (a <= .01) continue;
+    const w = tw(txtS, 30, 700, 4) + 28, h = 42;
+    rect(fx + 2, poleTop - h + 4, w, h, col, a);
+    txt(txtS, fx + 2 + w / 2, poleTop - h / 2 + 5, { size: 30, w: 700, sp: 4, col: '#ffffff', a, id: 'flag-' + txtS });
+  }
+  // the city marker dims when the city falls (24–27 s)
+  const dim = 1 - .55 * ss(seg(t, 24.0, 27.0));
+  dot(fx, fy, 4.5, C.amber, Math.max(aZhou, aRong) * dim);
+}
+
+// coalition nameplate at the arrow tip + the "示意" tag on the arrow
+function arrowMarks(t) {
+  const a = ss(seg(t, 10.5, 11.5)) * (1 - ss(seg(t, 17.0, 18.0))); if (a <= .01) return;
+  const tip = arrowPts[arrowPts.length - 1];
+  const [tx, ty, tz] = scr(tip); if (tz < 1) {
+    dot(tx, ty, 4, C.red, a);
+    txt('申侯联军', tx + 46, ty - 34, { size: 24, w: 700, sp: 4, align: 'left', col: C.red, a, id: 'np' });
+  }
+  const mid = arrowPts[Math.floor(arrowPts.length * .45)];
+  const [mx, my, mz] = scr(mid); if (mz < 1) {
+    txt('示意', mx, my + 44, { size: 18, w: 600, sp: 4, col: 'rgba(240,232,216,.85)', a, id: 'shi-yi' });
+  }
+}
+
+// battle glow at Mount Li, 18–24 s (restrained: a pulsing glow, no buildings, no burning)
+function battleGlow(t) {
+  const a = ss(seg(t, 18.0, 18.8)) * (1 - ss(seg(t, 23.2, 24.0))); if (a <= .01) return;
+  const [x, y, z] = scr(geo(...LISHAN, .6)); if (z > 1) return;
+  const pulse = .75 + .25 * Math.sin(t * 6.0);
+  const R = 150 * pulse;
+  const gr = g.createRadialGradient(x, y, 4, x, y, R);
+  gr.addColorStop(0, `rgba(255,110,60,${.55 * a})`); gr.addColorStop(.45, `rgba(255,80,40,${.28 * a})`); gr.addColorStop(1, 'rgba(255,80,40,0)');
+  g.save(); g.globalAlpha = 1; g.fillStyle = gr; g.beginPath(); g.arc(x, y, R, 0, 7); g.fill(); g.restore();
+  dot(x, y, 5, '#ffd9a0', a);
+}
+
+// intelligence card, right side, 10–18 s (proven facts only, no numbers)
+function intelCard(t) {
+  const a = ss(seg(t, 10.0, 11.0)) * (1 - ss(seg(t, 18.0, 19.0))); if (a <= .01) return;
+  const X = 1330, Y = 150, W = 550, H = 250;
+  g.save(); g.globalAlpha = a;
+  g.fillStyle = 'rgba(8,10,14,.88)'; g.beginPath(); g.roundRect(X, Y, W, H, 6); g.fill();
+  g.strokeStyle = '#ff4a3d'; g.lineWidth = 3;
+  const c = 22;
+  g.beginPath();
+  g.moveTo(X, Y + c); g.lineTo(X, Y); g.lineTo(X + c, Y);
+  g.moveTo(X + W - c, Y); g.lineTo(X + W, Y); g.lineTo(X + W, Y + c);
+  g.moveTo(X + W, Y + H - c); g.lineTo(X + W, Y + H); g.lineTo(X + W - c, Y + H);
+  g.moveTo(X + c, Y + H); g.lineTo(X, Y + H); g.lineTo(X, Y + H - c);
+  g.stroke(); g.restore();
+  txt('敌情判断', X + 28, Y + 48, { size: 28, w: 700, sp: 6, align: 'left', col: '#ff6a55', a, id: 'intel-t' });
+  txt('申侯、缯、犬戎联军', X + 28, Y + 122, { size: 26, w: 500, sp: 2, align: 'left', col: C.light, a, id: 'intel-1' });
+  txt('攻周', X + 28, Y + 172, { size: 26, w: 500, sp: 2, align: 'left', col: C.light, a, id: 'intel-2' });
+}
+
+// 洛邑 marker + label at the eastward route's end (44–56 s). The marker shows the direction/destination;
+// true 洛邑 (~112.45°E) lies beyond this map's eastern edge (111.0°E) — see FACTS.md §5.
+function eastMarks(t) {
+  const a = ss(seg(t, 44.0, 48.0)) * (1 - ss(seg(t, 56.0, 60.0)));
+  if (a <= .01) return;
+  const [x, y, z] = scr(geo(...LUOYI, .4));
+  if (z > 1) return;
+  dot(x, y, 4.5, C.amber, a);
+  txt('洛邑', x, y - 34, { size: 26, w: 700, sp: 4, col: '#ffffff', stroke: 'rgba(26,18,11,.9)', sw: 4, a, id: 'luoyi' });
+  txt('东迁至此', x, y + 30, { size: 18, w: 500, sp: 2, col: C.amberSoft, a, id: 'luoyi-sub' });
+}
+
+// ending card (48–60 s): "西周终结 · 第一场"
+function endingCard(t) {
+  const a = ss(seg(t, 48.0, 49.5)) * (1 - ss(seg(t, 58.5, 60.0)));
+  if (a <= .01) return;
+  const W = 640, H = 190, X = (Wd - W) / 2, Y = (Ht - H) / 2 - 40;
+  g.save(); g.globalAlpha = a;
+  g.fillStyle = 'rgba(8,10,14,.88)'; g.beginPath(); g.roundRect(X, Y, W, H, 6); g.fill();
+  g.strokeStyle = '#ffc36b'; g.lineWidth = 2; g.stroke();
+  g.restore();
+  txt('西周终结', Wd / 2, Y + 78, { size: 54, w: 700, sp: 10, col: C.light, a, id: 'end-t' });
+  txt('第一场', Wd / 2, Y + 142, { size: 26, w: 500, sp: 6, col: C.amberSoft, a, id: 'end-sub' });
+}
+
+// subtitles: Chinese only, bottom-left legend shelf
+function subtitles(t) {
+  const c = CUES.find(c => t >= c.t0 - .12 && t < c.t1 + .12);
+  g.save(); const gr = g.createLinearGradient(0, Ht - 250, 0, Ht); gr.addColorStop(0, 'rgba(6,10,15,0)'); gr.addColorStop(1, 'rgba(6,10,15,.55)');
+  g.fillStyle = gr; g.fillRect(0, Ht - 250, Wd, 250); g.restore();
+  if (!c) return;
+  const a = ss(seg(t, c.t0 - .12, c.t0 + .08)) * (1 - ss(seg(t, c.t1 - .08, c.t1 + .12)));
+  const X = 96, Y = Ht - 104;
+  g.save(); g.globalAlpha = a; g.fillStyle = C.amber; g.fillRect(X - 22, Y - 22, 3, 74); g.restore();
+  txt(c.zh, X, Y, { size: 36, w: 500, sp: 1.5, f: 'NotoSC', align: 'left', col: C.light, a, id: 'sub' });
+}
+
+function credits(t) {
+  const a = ss(seg(t, .6, 1.4));
+  txt('地形 AWS TERRAIN TILES · 影像 SENTINEL-2 CLOUDLESS 2016（EOX，CC BY 4.0）· 路线为示意 · 地形夸大 ×3.2',
+    Wd - 40, Ht - 26, { size: 12, w: 500, sp: 1, align: 'right', col: 'rgba(240,232,216,.55)', base: 'alphabetic', a, id: 'credits', nobox: true });
+}
+
+// ---------- the frame at film time t ----------
+function frame(t) {
+  TX = [];
+  const dist = setCamera(t);
+  g.setTransform(2, 0, 0, 2, 0, 0); g.clearRect(0, 0, Wd, Ht);
+  // the arrow: reveal 10–13 s, hold, fade 18–20 s
+  const k = eio(seg(t, 10.0, 13.0));
+  const head = k * arrow.glow.L;
+  const inten = ss(seg(t, 10.0, 10.4)) * (1 - ss(seg(t, 18.0, 20.0)));
+  for (const r of [arrow.glow, arrow.core]) rv(r, { revB: head, head, headAmt: 1.1 * (1 - ss(seg(k, .8, 1))), inten, flowPh: t * 26, soft: 6 });
+  // the eastward route: reveal 30–38 s, hold, fade 54–58 s
+  const ek = eio(seg(t, 30.0, 38.0));
+  const ehead = ek * east.glow.L;
+  const einten = ss(seg(t, 30.0, 30.4)) * (1 - ss(seg(t, 54.0, 58.0)));
+  for (const r of [east.glow, east.core]) rv(r, { revB: ehead, head: ehead, headAmt: 1.1 * (1 - ss(seg(ek, .8, 1))), inten: einten, flowPh: t * 26, soft: 6 });
+  post.dof.focus = dist; post.dof.aper = dist * lerp(3.5, 10.5, ss(seg(t, 6.0, 12.0)));
+  if (t >= 18 && t < 24.6) post.dof.aper = dist * 16;
+  VU.fade.value = 1;
+  post.composer.render();
+  // overlay, in order
+  mapLabels(t); titleBlock(t); dateBlock(t); flag(t); battleGlow(t); arrowMarks(t); intelCard(t); eastMarks(t); endingCard(t);
+  if (!Q.has('nosubs')) subtitles(t);
+  credits(t);
+}
+
+window.DUR = DUR;
+window.render = t => frame(t);
+// TEXTS returns the text boxes of the most recent render(t) (readcheck renders first, then reads TEXTS).
+window.TEXTS = t => TX.map(o => ({ ...o }));
+window.render(0);
+window.READY = true;
+</script>
+</body></html>

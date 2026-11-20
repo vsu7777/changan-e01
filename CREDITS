@@ -1,0 +1,40 @@
+# CREDITS — 长安易主系列 · 第 1 场《前771年 · 犬戎攻周》试段
+
+## 数据来源与许可
+
+### 地形（高程）— AWS Terrain Tiles（terrarium 格式）
+
+- 服务：`https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png`
+- 许可：AWS Terrain Tiles 为公开数据集（Mapzen / Joerd Hagerman 的 terrarium 编码，基于 SRTM 等公开高程数据）；本片按 STYLE.md §9 的许可干净清单使用。
+- 下载日期：2026-11-20（全部瓦片，见 `raw/manifest.jsonl`）
+- 用量：
+  - 细节网格：z10，x 820–823，y 406–409（16 张），覆盖 108.5–109.5°E、34.0–34.6°N
+  - 区域网格：z8，x 203–206，y 101–102（8 张），覆盖 106.8–111.0°E、33.2–35.0°N
+
+### 影像（卫星图）— Sentinel-2 cloudless 2016（EOX）
+
+- 服务：`https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless_3857/default/g/{z}/{y}/{x}.jpg`
+- 许可：CC BY 4.0（EOX IT Services GmbH；Sentinel-2 数据 © 欧空局 ESA / 哥白尼计划）。片尾字幕标注「影像 SENTINEL-2 CLOUDLESS 2016（EOX，CC BY 4.0）」。
+- 下载日期：2026-11-20（全部瓦片，见 `raw/manifest.jsonl`）
+- 用量：
+  - 细节影像：z11，y 813–818，x 1641–1646（36 张）
+  - 区域影像：z9，y 202–205，x 407–413（28 张）
+
+### 未使用的来源
+
+- 本片未使用 Google / Bing / Esri / Mapbox 的影像或地形（STYLE.md §9 禁用清单）。
+- 未使用 OSM 海岸线/海图标注（内陆片，无需）。
+
+## 事实来源
+
+- 《长安及周边战争年表（扩展文本稿）》（用户供稿，94 项，前771–1949），本集用 01 号条目。逐条核对见 `FACTS.md`。
+
+## 字体
+
+- Noto Sans SC 500 / 700，按本片用字 subset（107 字），见 `fonts/`。SIL Open Font License 1.1。
+
+## 制作
+
+- Lemo-Opuscar，`map-explainer`（立体地图解说）风格；地形夸大 ×3.2；低角度暖阳。
+- 试段 30 秒，纯画面 + 烧录中文字幕，无旁白、无配乐。
+- 路线为示意（片中标注「示意」），非实测行军路线。
